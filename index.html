@@ -344,8 +344,9 @@
       <!-- ================= LABELS ================= -->
       <section class="panel" id="panel-labels">
         <h2 class="noprint">Labels</h2>
-        <p class="lede noprint">Print this page from your browser to get paper labels — only the labels print. Stick one on each item and in each location. Each QR code contains this tracker's link plus the code, so scanning a label with a phone's normal Camera app opens the tracker with that item or location already picked — no in-page camera needed.</p>
+        <p class="lede noprint">Tap Print labels below to get paper labels — only the labels print. Stick one on each item and in each location. Each QR code contains this tracker's link plus the code, so scanning a label with a phone's normal Camera app opens the tracker with that item or location already picked — no in-page camera needed.</p>
         <div id="labelStatus" class="small noprint" style="margin-bottom:10px"></div>
+        <div class="row noprint" style="margin-bottom:12px"><button class="btn primary" id="btnPrintLabels">Print labels</button></div>
         <h3>Item labels</h3>
         <div class="label-grid" id="itemLabels"></div>
         <h3>Location labels</h3>
@@ -442,12 +443,49 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
           return '<option value="' + esc(l) + '"' + (l === selected ? " selected" : "") + ">" + esc(l) + "</option>";
         }).join("");
       }
+      var editingLoc = null; // name of the location currently being renamed
       function refreshLocationUI() {
         fillLocationSelect($("newLocation"));
         $("locList").innerHTML = locations.map(function (l) {
-          return '<span class="idchip" style="margin:0 6px 6px 0; display:inline-block">' + esc(l) + "</span>";
+          if (editingLoc === l) {
+            return '<span class="idchip" style="margin:0 6px 6px 0; display:inline-block">'
+              + '<input id="editLocInput" type="text" value="' + esc(l) + '" style="width:130px" aria-label="New name for ' + esc(l) + '" /> '
+              + '<button class="btn small-btn" id="btnSaveLoc">Save</button> '
+              + '<button class="btn small-btn" id="btnCancelLoc">Cancel</button></span>';
+          }
+          return '<span class="idchip" style="margin:0 6px 6px 0; display:inline-block">' + esc(l)
+            + ' <button class="btn small-btn" data-edit-loc="' + esc(l) + '">Edit</button></span>';
         }).join("");
         labelsRendered = false;
+        var editBtns = document.querySelectorAll("[data-edit-loc]");
+        for (var i = 0; i < editBtns.length; i++) {
+          editBtns[i].addEventListener("click", function () {
+            editingLoc = this.getAttribute("data-edit-loc");
+            refreshLocationUI();
+            var inp = $("editLocInput");
+            if (inp) { inp.focus(); inp.select(); }
+          });
+        }
+        var saveBtn = $("btnSaveLoc");
+        if (saveBtn) {
+          saveBtn.addEventListener("click", saveLocRename);
+          $("editLocInput").addEventListener("keydown", function (e) { if (e.key === "Enter") saveLocRename(); });
+        }
+        var cancelBtn = $("btnCancelLoc");
+        if (cancelBtn) cancelBtn.addEventListener("click", function () { editingLoc = null; refreshLocationUI(); });
+      }
+      function saveLocRename() {
+        var old = editingLoc;
+        var v = $("editLocInput").value.trim();
+        if (!v || v === old) { editingLoc = null; refreshLocationUI(); return; }
+        var dup = findLocationByName(v);
+        if (dup && dup !== old) return; // name already used — stay editing
+        for (var i = 0; i < locations.length; i++) if (locations[i] === old) locations[i] = v;
+        items.forEach(function (it) { if (it.location === old) it.location = v; });
+        editingLoc = null;
+        saveState();
+        refreshLocationUI();
+        renderItems();
       }
       $("btnAddLoc").addEventListener("click", function () {
         var v = $("newLocName").value.trim();
@@ -966,6 +1004,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       refreshLocationUI();
       renderItems();
       renderHistory();
+      $("btnPrintLabels").addEventListener("click", function () { window.print(); });
       (function () {
         var d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
         document.getElementById("whereWhen").value = d.toISOString().slice(0, 16);
