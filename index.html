@@ -334,7 +334,7 @@
       <!-- ================= HISTORY ================= -->
       <section class="panel" id="panel-history">
         <h2>Movement history</h2>
-        <p class="lede">Every move, newest first. This log is kept for the session — download the CSV as your backup copy.</p>
+        <p class="lede">Every move, newest first. Moves are saved on this device, so they are still here after a reload — the CSV download is your backup copy.</p>
         <div class="row" style="margin-bottom:14px">
           <button class="btn primary" id="btnCsv">Download CSV backup</button>
         </div>
@@ -364,7 +364,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     </script>
     <script>
       "use strict";
-      /* ==================== State (in memory for this session) ==================== */
+      /* ==================== State (saved on this device) ==================== */
       var locations = ["Office", "Store Room", "Meeting Room A", "Meeting Room B", "Reception", "Warehouse"];
       var now = Date.now();
       var items = [
@@ -381,6 +381,30 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       var nextNum = 6;
       var pendingLocation = null;   // set by scanning a location label
       var labelsRendered = false;
+
+      /* ==================== Saving (on this device) ====================
+         Items, moves and locations are saved in this browser's storage
+         every time they change, so they are still here after a reload.
+         If storage is blocked (e.g. private browsing), the tracker
+         still works for the session — it just can't keep the data. */
+      var STORE_KEY = "equipment-tracker-v1";
+      function saveState() {
+        try {
+          localStorage.setItem(STORE_KEY, JSON.stringify({ v: 1, locations: locations, items: items, historyLog: historyLog, nextNum: nextNum }));
+        } catch (e) { /* storage unavailable — session-only, as before */ }
+      }
+      function loadState() {
+        try {
+          var raw = localStorage.getItem(STORE_KEY);
+          if (!raw) return false;
+          var d = JSON.parse(raw);
+          if (!d || !Array.isArray(d.items) || !Array.isArray(d.historyLog) || !Array.isArray(d.locations)) return false;
+          locations = d.locations; items = d.items; historyLog = d.historyLog;
+          if (typeof d.nextNum === "number" && d.nextNum > 0) nextNum = d.nextNum;
+          return true;
+        } catch (e) { return false; }
+      }
+      loadState();
 
       function $(id) { return document.getElementById(id); }
       function esc(s) {
@@ -430,6 +454,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         if (!v) return;
         if (findLocationByName(v)) { $("newLocName").value = ""; return; }
         locations.push(v);
+        saveState();
         $("newLocName").value = "";
         refreshLocationUI();
       });
@@ -479,6 +504,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       }
       function removeItem(id) {
         items = items.filter(function (it) { return it.id !== id; });
+        saveState();
         renderItems();
       }
       function clearSamples() {
@@ -486,6 +512,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         items.forEach(function (it) { if (it.sample) sampleIds[it.id] = true; });
         items = items.filter(function (it) { return !it.sample; });
         historyLog = historyLog.filter(function (h) { return !sampleIds[h.itemId]; });
+        saveState();
         renderItems(); renderHistory();
       }
       $("itemSearch").addEventListener("input", renderItems);
@@ -495,6 +522,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         if (!name) { $("addMsg").innerHTML = '<span style="color:var(--danger)">Give the item a name first.</span>'; return; }
         var id = "EQP-" + String(nextNum++).padStart(3, "0");
         items.push({ id: id, name: name, category: cat, location: $("newLocation").value, sample: false, createdAt: Date.now() });
+        saveState();
         $("newName").value = ""; $("newCategory").value = "";
         $("addMsg").innerHTML = 'Added as <strong>' + esc(id) + "</strong>. Print its label from the Labels tab.";
         renderItems();
@@ -615,6 +643,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
           }
           historyLog.push({ ts: Date.now(), itemId: item.id, from: from, to: to, note: note });
           item.location = to;
+          saveState();
           pendingLocation = null;
           $("foundArea").innerHTML = '<div class="alert ok"><h4>Move saved</h4><p style="margin:0"><strong>' + esc(item.id) + "</strong> moved from " + esc(from) + " to <strong>" + esc(to) + "</strong> · " + esc(fmtTime(Date.now())) + ".</p></div>";
           renderItems(); renderHistory();
