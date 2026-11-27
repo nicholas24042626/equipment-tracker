@@ -186,6 +186,7 @@
       .loc-grip { opacity: .55; padding-right: 2px; }
       .meta { color: var(--muted); font-size: 0.92rem; margin-top: 2px; }
       .meta strong { color: var(--ink); }
+      .meta select { display: inline-block; width: auto; max-width: 100%; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 4px 8px; font-weight: 600; color: var(--ink); }
 
       /* ---------- Items / history lists ---------- */
       .item-card { display: flex; gap: 10px; align-items: flex-start; }
@@ -214,6 +215,8 @@
       .label-card .lid { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 700; font-size: 1.05rem; }
       .label-card .lname { font-size: 0.88rem; color: #444; word-break: break-word; }
       .label-card .ltype { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: #888; margin-bottom: 6px; }
+      .label-pick { display: flex; align-items: center; gap: 6px; justify-content: center; font-size: 0.85rem; color: #111; margin-bottom: 8px; cursor: pointer; }
+      .label-pick input { width: 18px; height: 18px; margin: 0; }
 
       @media print {
         body { background: #fff; }
@@ -221,6 +224,7 @@
         #panel-labels { display: block !important; padding: 0; }
         .wrap { max-width: none; padding: 0; }
         .label-card { break-inside: avoid; border-color: #bbb; }
+        .skip-print { display: none !important; }
       }
     </style>
   </head>
@@ -356,9 +360,9 @@
       <!-- ================= LABELS ================= -->
       <section class="panel" id="panel-labels">
         <h2 class="noprint">Labels</h2>
-        <p class="lede noprint">Tap Print labels below to get paper labels — only the labels print. Stick one on each item. Each QR code contains this tracker's link plus the item's code, so scanning a label with a phone's normal Camera app opens the tracker with that item already picked — no in-page camera needed.</p>
+        <p class="lede noprint">Tick the labels you want, then tap Print labels — only the ticked labels print. Stick one on each item. Each QR code contains this tracker's link plus the item's code, so scanning a label with a phone's normal Camera app opens the tracker with that item already picked — no in-page camera needed.</p>
         <div id="labelStatus" class="small noprint" style="margin-bottom:10px"></div>
-        <div class="row noprint" style="margin-bottom:12px"><button class="btn primary" id="btnPrintLabels">Print labels</button></div>
+        <div class="row noprint" style="margin-bottom:12px"><button class="btn primary" id="btnPrintLabels">Print labels</button><button class="btn" id="btnSelectAllLabels">Select all</button><button class="btn" id="btnSelectNoLabels">Select none</button></div>
         <h3>Item labels</h3>
         <div class="label-grid" id="itemLabels"></div>
       </section>
@@ -392,6 +396,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       var nextNum = 6;
       var updatedAt = 0; // ms timestamp of the last change on this device (drives sync)
       var labelsRendered = false;
+      var labelSel = {}; // item id -> false means not selected for printing (default: all selected)
 
       /* ==================== Saving (on this device) ====================
          Items, moves and locations are saved in this browser's storage
@@ -782,7 +787,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
               '<div class="name">' + esc(it.name) + (it.sample ? '<span class="badge">SAMPLE</span>' : "") + "</div>" +
               '<div style="margin:4px 0"><span class="idchip">' + esc(it.id) + "</span></div>" +
               '<div class="meta">Category: ' + esc(it.category) + "</div>" +
-              '<div class="meta">Now in: <strong>' + esc(it.location) + "</strong></div>" +
+              '<div class="meta">Now in: <select class="loc-change" data-loc-change="' + esc(it.id) + '" aria-label="Move ' + esc(it.name) + ' to another location"></select></div>' +
               "</div>" +
               '<button class="btn small-btn danger" data-remove="' + esc(it.id) + '">Remove</button>' +
               "</div>";
@@ -808,12 +813,33 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
             }
           });
         });
+        document.querySelectorAll("[data-loc-change]").forEach(function (s) {
+          var it = findItem(s.getAttribute("data-loc-change"));
+          if (!it) return;
+          fillLocationSelect(s, it.location);
+          if (locations.indexOf(it.location) < 0) {
+            // The item's location is not in the list — still show it, selected.
+            var o = document.createElement("option");
+            o.value = it.location; o.textContent = it.location; o.selected = true;
+            s.insertBefore(o, s.firstChild);
+          }
+          s.addEventListener("change", function () { changeItemLocation(it.id, s.value); });
+        });
         labelsRendered = false;
       }
       function removeItem(id) {
         items = items.filter(function (it) { return it.id !== id; });
         saveState();
         renderItems();
+      }
+      function changeItemLocation(id, to) {
+        var it = findItem(id);
+        if (!it || !to || to === it.location) return;
+        var from = it.location;
+        historyLog.push({ ts: Date.now(), itemId: it.id, from: from, to: to, note: "" });
+        it.location = to;
+        saveState();
+        renderItems(); renderHistory();
       }
       function clearSamples() {
         var sampleIds = {};
@@ -1242,7 +1268,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         function make(el, text, type, idText, nameText) {
           var card = document.createElement("div");
           card.className = "label-card";
-          card.innerHTML = '<div class="ltype"></div><div class="qr"></div><div class="lid"></div><div class="lname"></div>';
+          card.innerHTML = '<label class="label-pick noprint"><input type="checkbox" data-label-pick="' + esc(idText) + '" checked> Print this label</label><div class="ltype"></div><div class="qr"></div><div class="lid"></div><div class="lname"></div>';
           card.querySelector(".ltype").textContent = type;
           card.querySelector(".lid").textContent = idText;
           card.querySelector(".lname").textContent = nameText;
@@ -1273,13 +1299,43 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         var il = document.getElementById("itemLabels");
         il.innerHTML = "";
         items.forEach(function (it) { make(il, base + "?code=" + encodeURIComponent(it.id), "Equipment", it.id, it.name); });
-        document.getElementById("labelStatus").textContent = "Labels ready — print them, or screenshot one to test it with your phone's Camera app.";
+        document.querySelectorAll("[data-label-pick]").forEach(function (cb) {
+          var id = cb.getAttribute("data-label-pick");
+          var on = labelSel[id] !== false;
+          cb.checked = on;
+          cb.closest(".label-card").classList.toggle("skip-print", !on);
+          cb.addEventListener("change", function () {
+            labelSel[id] = cb.checked;
+            cb.closest(".label-card").classList.toggle("skip-print", !cb.checked);
+            updateLabelStatus();
+          });
+        });
+        updateLabelStatus();
+      }
+      function updateLabelStatus() {
+        var total = items.length;
+        var sel = items.filter(function (it) { return labelSel[it.id] !== false; }).length;
+        document.getElementById("labelStatus").textContent = sel + " of " + total + " labels selected — print them, or screenshot one to test it with your phone's Camera app.";
+      }
+      function setAllLabels(on) {
+        items.forEach(function (it) { labelSel[it.id] = on; });
+        document.querySelectorAll("[data-label-pick]").forEach(function (cb) {
+          cb.checked = on;
+          cb.closest(".label-card").classList.toggle("skip-print", !on);
+        });
+        updateLabelStatus();
       }
       /* ==================== Init + deep links (?code= / #code=) ==================== */
       refreshLocationUI();
       renderItems();
       renderHistory();
-      $("btnPrintLabels").addEventListener("click", function () { window.print(); });
+      $("btnPrintLabels").addEventListener("click", function () {
+        var sel = items.filter(function (it) { return labelSel[it.id] !== false; }).length;
+        if (!sel) { $("labelStatus").textContent = "Tick at least one label to print."; return; }
+        window.print();
+      });
+      $("btnSelectAllLabels").addEventListener("click", function () { setAllLabels(true); });
+      $("btnSelectNoLabels").addEventListener("click", function () { setAllLabels(false); });
       (function () {
         var d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
         document.getElementById("whereWhen").value = d.toISOString().slice(0, 16);
