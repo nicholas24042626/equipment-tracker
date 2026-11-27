@@ -231,6 +231,8 @@
         <button class="tab" data-tab="labels" role="tab">Labels</button>
       </nav>
 
+      <div id="saveWarn" class="alert warn noprint" style="display:none; margin:12px 0">Saving is blocked in this browser — for example a private tab, or opening this link inside another app. Your items and moves will be lost when this page closes. Open the link in Safari or Chrome instead, and your data will be kept.</div>
+
       <!-- ================= SCAN ================= -->
       <section class="panel active" id="panel-scan">
         <h2>Scan an item or location</h2>
@@ -406,6 +408,31 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         } catch (e) { return false; }
       }
       loadState();
+
+      /* ==================== Saving when the page closes ====================
+         The tracker already saves on every change, but save again whenever
+         the page is hidden or closed, so nothing is ever lost at the end
+         of a visit. (No prompt is shown — this only writes the data.) */
+      window.addEventListener("pagehide", saveState);
+      window.addEventListener("beforeunload", saveState);
+      document.addEventListener("visibilitychange", function () {
+        if (document.visibilityState === "hidden") saveState();
+      });
+      /* If this browser won't keep saved data at all (private tab, or the
+         link opened inside another app), say so plainly instead of
+         silently losing everything on close. */
+      (function () {
+        var ok = true;
+        try {
+          localStorage.setItem(STORE_KEY + "-test", "1");
+          ok = localStorage.getItem(STORE_KEY + "-test") === "1";
+          localStorage.removeItem(STORE_KEY + "-test");
+        } catch (e) { ok = false; }
+        if (!ok) {
+          var w = $("saveWarn");
+          if (w) w.style.display = "block";
+        }
+      })();
 
       function $(id) { return document.getElementById(id); }
       function esc(s) {
