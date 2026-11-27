@@ -296,13 +296,6 @@
           <span class="small" id="renumberMsg" style="align-self:center"></span>
         </div>
 
-        <div class="row noprint" style="margin:4px 0 12px">
-          <button class="btn" id="btnExportData">Export data</button>
-          <button class="btn" id="btnImportData">Import data</button>
-          <input type="file" id="importFile" accept=".json,application/json" style="display:none" />
-          <span class="small" id="backupMsg" style="align-self:center"></span>
-        </div>
-
         <h3>Add an item</h3>
         <div class="card">
           <div class="field">
@@ -868,44 +861,6 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         renderItems(); renderHistory();
         $("renumberMsg").textContent = "Renumbered " + items.length + " items from EQP-001. Reprint labels from the Labels tab.";
       });
-      $("btnExportData").addEventListener("click", function () {
-        var data = { v: 1, exportedAt: new Date().toISOString(), locations: locations, items: items, historyLog: historyLog, nextNum: nextNum };
-        var blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-        var a = document.createElement("a");
-        var d = new Date();
-        var stamp = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-        a.href = URL.createObjectURL(blob);
-        a.download = "equipment-tracker-backup-" + stamp + ".json";
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-        $("backupMsg").textContent = "Backup downloaded — kept as a spare copy. Your devices now stay in sync through the shared sheet.";
-      });
-      $("btnImportData").addEventListener("click", function () { $("importFile").click(); });
-      $("importFile").addEventListener("change", function () {
-        var f = this.files && this.files[0];
-        if (!f) return;
-        var rd = new FileReader();
-        rd.onload = function () {
-          try {
-            var d = JSON.parse(rd.result);
-            if (!d || !Array.isArray(d.items) || !Array.isArray(d.historyLog) || !Array.isArray(d.locations)) throw new Error("bad backup");
-            if (!confirm("Replace everything on this device with this backup (" + d.items.length + " items, " + d.historyLog.length + " moves)? Your current data on this device will be replaced.")) return;
-            locations = d.locations; items = d.items; historyLog = d.historyLog;
-            if (typeof d.nextNum === "number" && d.nextNum > 0) nextNum = d.nextNum;
-            else nextNum = nextFreeNum();
-            editingLoc = null;
-            saveState();
-            refreshLocationUI(); renderItems(); renderHistory();
-            $("backupMsg").textContent = "Imported " + items.length + " items and " + historyLog.length + " moves.";
-          } catch (err) {
-            $("backupMsg").textContent = "That file doesn't look like a tracker backup.";
-          }
-        };
-        rd.readAsText(f);
-        $("importFile").value = "";
-      });
-
       /* ==================== History ==================== */
       function renderHistory() {
         if (!historyLog.length) {
