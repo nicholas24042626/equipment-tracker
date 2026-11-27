@@ -297,6 +297,7 @@
 
         <div class="row noprint" style="margin:4px 0 12px">
           <button class="btn" id="btnRenumber">Reset serial numbers</button>
+          <button class="btn" id="btnResetAll">Reset all data</button>
           <span class="small" id="renumberMsg" style="align-self:center"></span>
         </div>
 
@@ -328,6 +329,7 @@
             </div>
             <button class="btn" id="btnAddLoc">Add location</button>
           </div>
+          <div id="locMsg" class="small" style="margin-top:8px"></div>
         </div>
       </section>
 
@@ -509,7 +511,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         var its = s.items.map(normItem).sort(function (a, b) { return String(a.id).localeCompare(String(b.id)); });
         var locs = s.locations.slice().sort();
         var hist = s.historyLog.map(normHist).sort(function (a, b) {
-          return (a.ts - b.ts) || String(a.itemId).localeCompare(String(b.itemId)) || String(a.to).localeCompare(String(b.to));
+          return (a.ts - b.ts) || String(a.itemId).localeCompare(String(b.itemId)) || String(a.from).localeCompare(String(b.from)) || String(a.to).localeCompare(String(b.to)) || String(a.note).localeCompare(String(b.note));
         });
         return JSON.stringify({ locations: locs, items: its, historyLog: hist, nextNum: s.nextNum });
       }
@@ -560,7 +562,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         locations.forEach(function (l) { if (locs.indexOf(l) === -1) locs.push(l); });
         var seen = {}, mergedHist = [];
         function addHist(h, itemId) {
-          var k = h.ts + "|" + itemId + "|" + h.to;
+          var k = h.ts + "|" + itemId + "|" + h.from + "|" + h.to;
           if (!seen[k]) { seen[k] = true; mergedHist.push({ ts: h.ts, itemId: itemId, from: h.from, to: h.to, note: h.note || "" }); }
         }
         c.historyLog.forEach(function (h) { addHist(h, h.itemId); });
@@ -578,6 +580,26 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
           return h.ts > r || (h.ts === r && h.note === "removed");
         });
         keptHist.sort(function (a, b) { return a.ts - b.ts; });
+        // A reset ("Reset all data") wipes everything: a side whose own log
+        // does not hold the reset entry is pre-reset, so its items, locations
+        // and log are discarded and the post-reset side is taken wholesale.
+        // A side counts as post-reset only by holding the entry — not merely
+        // by having saved later, since a stale device that edits before
+        // pulling is still pre-reset. Once both sides hold it, the reset
+        // only prunes pre-reset history and the merge runs as normal.
+        var resetTs = 0;
+        keptHist.forEach(function (h) { if (h.note === "Reset all data" && h.ts > resetTs) resetTs = h.ts; });
+        if (resetTs > 0) {
+          var localHasReset = historyLog.some(function (h) { return h.note === "Reset all data" && h.ts >= resetTs; });
+          var cloudHasReset = c.historyLog.some(function (h) { return h.note === "Reset all data" && h.ts >= resetTs; });
+          if (localHasReset && !cloudHasReset) {
+            return { locations: locations.slice(), items: items.map(copyItem), historyLog: historyLog.filter(function (h) { return h.ts >= resetTs; }), nextNum: nextNum };
+          }
+          if (cloudHasReset && !localHasReset) {
+            return { locations: c.locations.slice(), items: c.items.map(copyItem), historyLog: c.historyLog.filter(function (h) { return h.ts >= resetTs; }), nextNum: (typeof c.nextNum === "number" && c.nextNum > 0) ? c.nextNum : 1 };
+          }
+          keptHist = keptHist.filter(function (h) { return h.ts >= resetTs; });
+        }
         var latestById = {};
         keptHist.forEach(function (h) {
           if (!latestById[h.itemId] || h.ts >= latestById[h.itemId].ts) latestById[h.itemId] = h;
@@ -599,6 +621,23 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
             // (e.g. one side renamed the location).
             it.location = (updatedAt >= cloudAt) ? localIds[it.id].location : cloudIds[it.id].location;
           }
+        });
+        // Locations: a removal entry drops the name — unless an item is still
+        // in it on either side, in which case the location stays until the
+        // item moves out (the removal then takes effect on the next merge).
+        // A later addition entry brings the name back.
+        var locActivity = {};
+        keptHist.forEach(function (h) {
+          if (h.note === "Location removed" || h.note === "Location added") {
+            if (!locActivity[h.from] || h.ts >= locActivity[h.from].ts) locActivity[h.from] = h;
+          }
+        });
+        var occupied = {};
+        finalItems.forEach(function (it) { occupied[it.location] = true; });
+        locs = locs.filter(function (l) {
+          var act = locActivity[l];
+          if (!act || act.note !== "Location removed") return true;
+          return !!occupied[l];
         });
         var top = 0;
         finalItems.forEach(function (it) { var n = parseInt(String(it.id).replace(/^EQP-/, ""), 10); if (n > top) top = n; });
@@ -762,7 +801,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
               + '<button class="btn small-btn" id="btnCancelLoc">Cancel</button></span>';
           }
           return '<span class="idchip loc-chip" data-loc="' + esc(l) + '" style="margin:0 6px 6px 0; display:inline-block"><span class="loc-grip" aria-hidden="true">⋮⋮</span> ' + esc(l)
-            + ' <button class="btn small-btn" data-edit-loc="' + esc(l) + '">Edit</button></span>';
+            + ' <button class="btn small-btn" data-edit-loc="' + esc(l) + '">Edit</button> <button class="btn small-btn" data-remove-loc="' + esc(l) + '" aria-label="Remove location ' + esc(l) + '">\u00d7</button></span>';
         }).join("");
         labelsRendered = false;
         var editBtns = document.querySelectorAll("[data-edit-loc]");
@@ -773,6 +812,10 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
             var inp = $("editLocInput");
             if (inp) { inp.focus(); inp.select(); }
           });
+        }
+        var removeBtns = document.querySelectorAll("[data-remove-loc]");
+        for (var i = 0; i < removeBtns.length; i++) {
+          removeBtns[i].addEventListener("click", function () { removeLocation(this.getAttribute("data-remove-loc")); });
         }
         var chips = document.querySelectorAll("#locList [data-loc]");
         for (var i = 0; i < chips.length; i++) {
@@ -786,6 +829,23 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         var cancelBtn = $("btnCancelLoc");
         if (cancelBtn) cancelBtn.addEventListener("click", function () { editingLoc = null; refreshLocationUI(); });
       }
+      function removeLocation(name) {
+        var msg = $("locMsg");
+        function say(t) { if (msg) msg.textContent = t; }
+        if (locations.indexOf(name) === -1) return;
+        if (locations.length <= 1) { say("Keep at least one location — add another one first if you want to remove this one."); return; }
+        var n = 0;
+        items.forEach(function (it) { if (it.location === name) n++; });
+        if (n > 0) { say("\u201c" + name + "\u201d still has " + n + " item" + (n > 1 ? "s" : "") + " in it. Move them out first (use each item\u2019s \u201cNow in\u201d list), then remove it."); return; }
+        if (!confirm("Remove the location \u201c" + name + "\u201d?")) return;
+        locations = locations.filter(function (l) { return l !== name; });
+        if (editingLoc === name) editingLoc = null;
+        // Log the removal so the sync merge drops it on the other device too.
+        historyLog.push({ ts: Date.now(), itemId: "", from: name, to: "", note: "Location removed" });
+        saveState();
+        say("Removed \u201c" + name + "\u201d.");
+        refreshLocationUI(); renderItems();
+      }
       function saveLocRename() {
         var old = editingLoc;
         var v = $("editLocInput").value.trim();
@@ -794,6 +854,8 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         if (dup && dup !== old) return; // name already used — stay editing
         for (var i = 0; i < locations.length; i++) if (locations[i] === old) locations[i] = v;
         items.forEach(function (it) { if (it.location === old) it.location = v; });
+        historyLog.push({ ts: Date.now(), itemId: "", from: old, to: "", note: "Location removed" });
+        historyLog.push({ ts: Date.now(), itemId: "", from: v, to: "", note: "Location added" });
         editingLoc = null;
         saveState();
         refreshLocationUI();
@@ -873,6 +935,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         if (!v) return;
         if (findLocationByName(v)) { $("newLocName").value = ""; return; }
         locations.push(v);
+        historyLog.push({ ts: Date.now(), itemId: "", from: v, to: "", note: "Location added" });
         saveState();
         $("newLocName").value = "";
         refreshLocationUI();
@@ -999,13 +1062,36 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         renderItems(); renderHistory();
         $("renumberMsg").textContent = "Renumbered " + items.length + " items from EQP-001. Reprint labels from the Labels tab.";
       });
+      /* Reset everything to the starting data (5 sample items, 6 starting
+         locations, empty move log). The "Reset all data" log entry is what
+         makes the other device drop its old data too (see mergeCloudLocal);
+         without it the merge would just bring the wiped data back. */
+      $("btnResetAll").addEventListener("click", function () {
+        if (!confirm("Reset all data? This clears every item, location and move on this device and the shared sheet, and restores the 5 sample items and the 6 starting locations. Items you added will be gone.")) return;
+        var t = Date.now();
+        locations = ["Office", "Store Room", "Meeting Room A", "Meeting Room B", "Reception", "Warehouse"];
+        items = [
+          { id: "EQP-001", name: "Dell Latitude 5440 laptop", category: "IT Equipment", location: "Office", sample: true, createdAt: t },
+          { id: "EQP-002", name: "Epson EB-X49 projector", category: "AV Equipment", location: "Meeting Room A", sample: true, createdAt: t },
+          { id: "EQP-003", name: "Ergonomic mesh office chair", category: "Furniture", location: "Office", sample: true, createdAt: t },
+          { id: "EQP-004", name: "Dell 24-inch monitor P2422H", category: "IT Equipment", location: "Store Room", sample: true, createdAt: t },
+          { id: "EQP-005", name: "Stanley 84-piece toolbox", category: "Tools", location: "Warehouse", sample: true, createdAt: t }
+        ];
+        historyLog = [{ ts: t, itemId: "", from: "", to: "", note: "Reset all data" }];
+        nextNum = 6;
+        editingLoc = null;
+        labelSel = {};
+        saveState();
+        refreshLocationUI(); renderItems(); renderHistory();
+        $("renumberMsg").textContent = "All data reset to the 5 sample items.";
+      });
       /* ==================== History ==================== */
       function renderHistory() {
-        if (!historyLog.length) {
+        var sorted = historyLog.slice().filter(function (h) { return h.note !== "Location removed" && h.note !== "Location added" && h.note !== "Reset all data"; }).sort(function (a, b) { return b.ts - a.ts; });
+        if (!sorted.length) {
           $("historyList").innerHTML = '<div class="empty">No moves logged yet. Scan an item and save a move to start the log.</div>';
           return;
         }
-        var sorted = historyLog.slice().sort(function (a, b) { return b.ts - a.ts; });
         $("historyList").innerHTML = sorted.map(function (h) {
           var it = findItem(h.itemId);
           var removed = h.note === "removed";
