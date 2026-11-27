@@ -239,8 +239,8 @@
 
       <!-- ================= SCAN ================= -->
       <section class="panel active" id="panel-scan">
-        <h2>Scan an item or location</h2>
-        <p class="lede">Point the camera at a label's QR code, or type the code (like <strong>EQP-001</strong>) below. Scanning a location label sets it as the destination for the next item you scan. If the live camera is blocked on your phone, tap <strong>Scan from a photo</strong> instead — it reads the label from a photo taken with your Camera app, so this page needs no camera permission for it.</p>
+        <h2>Scan an item</h2>
+        <p class="lede">Point the camera at an item label's QR code, or type the code (like <strong>EQP-001</strong>) below. If the live camera is blocked on your phone, tap <strong>Scan from a photo</strong> instead — it reads the label from a photo taken with your Camera app, so this page needs no camera permission for it.</p>
 
         <div id="deepLinkNote"></div>
 
@@ -269,7 +269,7 @@
         <div class="divider">or type the code</div>
         <div class="row">
           <div class="field" style="flex:1 1 55%; margin-bottom:0">
-            <input id="manualCode" type="text" inputmode="text" autocomplete="off" autocapitalize="characters" placeholder="e.g. EQP-001" aria-label="Item or location code" />
+            <input id="manualCode" type="text" inputmode="text" autocomplete="off" autocapitalize="characters" placeholder="e.g. EQP-001" aria-label="Item code" />
           </div>
           <button class="btn primary" id="btnFind">Find</button>
         </div>
@@ -363,13 +363,11 @@
       <!-- ================= LABELS ================= -->
       <section class="panel" id="panel-labels">
         <h2 class="noprint">Labels</h2>
-        <p class="lede noprint">Tap Print labels below to get paper labels — only the labels print. Stick one on each item and in each location. Each QR code contains this tracker's link plus the code, so scanning a label with a phone's normal Camera app opens the tracker with that item or location already picked — no in-page camera needed.</p>
+        <p class="lede noprint">Tap Print labels below to get paper labels — only the labels print. Stick one on each item. Each QR code contains this tracker's link plus the item's code, so scanning a label with a phone's normal Camera app opens the tracker with that item already picked — no in-page camera needed.</p>
         <div id="labelStatus" class="small noprint" style="margin-bottom:10px"></div>
         <div class="row noprint" style="margin-bottom:12px"><button class="btn primary" id="btnPrintLabels">Print labels</button></div>
         <h3>Item labels</h3>
         <div class="label-grid" id="itemLabels"></div>
-        <h3>Location labels</h3>
-        <div class="label-grid" id="locLabels"></div>
       </section>
     </div>
 
@@ -400,7 +398,6 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       ];
       var nextNum = 6;
       var updatedAt = 0; // ms timestamp of the last change on this device (drives sync)
-      var pendingLocation = null;   // set by scanning a location label
       var labelsRendered = false;
 
       /* ==================== Saving (on this device) ====================
@@ -970,37 +967,19 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         var code = String(raw || "").trim();
         if (!code) return;
         // A scanned label may carry the full link — pull the code back out of it.
-        var m = code.match(/[?&#](code|loc)=([^&#\s]+)/i);
-        if (m) {
-          var val = decodeURIComponent(m[2]);
-          if (m[1].toLowerCase() === "loc") { setPendingLocation(val); return; }
-          code = val;
-        }
+        var m = code.match(/[?&#]code=([^&#\s]+)/i);
+        if (m) { code = decodeURIComponent(m[1]); }
         var item = findItem(code);
         if (item) { showFound(item); return; }
-        var loc = findLocationByName(code);
-        if (loc) { setPendingLocation(loc); return; }
         $("findMsg").innerHTML = '<div class="alert warn"><h4>No match for &ldquo;' + esc(code) + '&rdquo;</h4>' +
           "<p style='margin:0'>Check the code and try again, or add it as a new item.</p>" +
           '<button class="btn small-btn" id="btnAddFromScan">Add as a new item</button></div>';
         $("btnAddFromScan").addEventListener("click", function () { showTab("items"); $("newName").focus(); });
       }
-      function setPendingLocation(name) {
-        var loc = findLocationByName(name);
-        if (!loc) {
-          $("findMsg").innerHTML = '<div class="alert warn"><p style="margin:0">Location &ldquo;' + esc(name) + '&rdquo; is not in the list yet. Add it on the Items tab.</p></div>';
-          return;
-        }
-        pendingLocation = loc;
-        $("findMsg").innerHTML = '<div class="alert ok"><h4>Destination set: ' + esc(loc) + "</h4>" +
-          "<p style='margin:0'>Now scan or type an item code — it will be moved to <strong>" + esc(loc) + "</strong>.</p></div>";
-        var sel = $("moveTo");
-        if (sel) sel.value = loc;
-      }
       function showFound(item) {
         $("findMsg").innerHTML = "";
         var opts = locations.map(function (l) {
-          var sel = pendingLocation ? l === pendingLocation : l === item.location;
+          var sel = l === item.location;
           return '<option value="' + esc(l) + '"' + (sel ? " selected" : "") + ">" + esc(l) + "</option>";
         }).join("");
         $("foundArea").innerHTML =
@@ -1025,7 +1004,6 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
           historyLog.push({ ts: Date.now(), itemId: item.id, from: from, to: to, note: note });
           item.location = to;
           saveState();
-          pendingLocation = null;
           $("foundArea").innerHTML = '<div class="alert ok"><h4>Move saved</h4><p style="margin:0"><strong>' + esc(item.id) + "</strong> moved from " + esc(from) + " to <strong>" + esc(to) + "</strong> · " + esc(fmtTime(Date.now())) + ".</p></div>";
           renderItems(); renderHistory();
         });
@@ -1337,13 +1315,12 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
             qrEl.textContent = text;
           }
         }
-        var il = document.getElementById("itemLabels"), ll = document.getElementById("locLabels");
-        il.innerHTML = ""; ll.innerHTML = "";
+        var il = document.getElementById("itemLabels");
+        il.innerHTML = "";
         items.forEach(function (it) { make(il, base + "?code=" + encodeURIComponent(it.id), "Equipment", it.id, it.name); });
-        locations.forEach(function (l) { make(ll, base + "?loc=" + encodeURIComponent(l), "Location", l, "Scan with an item to log a move here"); });
         document.getElementById("labelStatus").textContent = "Labels ready — print them, or screenshot one to test it with your phone's Camera app.";
       }
-      /* ==================== Init + deep links (?code= / ?loc= / #code=) ==================== */
+      /* ==================== Init + deep links (?code= / #code=) ==================== */
       refreshLocationUI();
       renderItems();
       renderHistory();
@@ -1353,20 +1330,15 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         document.getElementById("whereWhen").value = d.toISOString().slice(0, 16);
       })();
       (function () {
-        var code = null, loc = null;
+        var code = null;
         try {
           var q = new URLSearchParams(location.search);
-          code = q.get("code"); loc = q.get("loc");
+          code = q.get("code");
           if (!code && location.hash) {
             var h = new URLSearchParams(location.hash.replace(/^#/, ""));
-            code = h.get("code"); loc = h.get("loc");
+            code = h.get("code");
           }
         } catch (e) {}
-        if (loc) {
-          setPendingLocation(loc);
-          document.getElementById("deepLinkNote").innerHTML =
-            '<div class="alert ok"><p style="margin:0">Opened from a location label: destination set to <strong>' + esc(loc) + "</strong>. Now scan or type an item code.</p></div>";
-        }
         if (code) {
           document.getElementById("manualCode").value = code;
           handleCode(code);
