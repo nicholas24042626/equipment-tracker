@@ -407,6 +407,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       function saveLocal() {
         try {
           localStorage.setItem(STORE_KEY, JSON.stringify({ v: 1, locations: locations, items: items, historyLog: historyLog, nextNum: nextNum, updatedAt: updatedAt }));
+          hasLocalState = true;
         } catch (e) { /* storage unavailable — session-only, as before */ }
       }
       function saveState() {
@@ -431,11 +432,17 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       /* ==================== Saving when the page closes ====================
          The tracker already saves on every change, but save again whenever
          the page is hidden or closed, so nothing is ever lost at the end
-         of a visit. (No prompt is shown — this only writes the data.) */
-      window.addEventListener("pagehide", function () { saveState(); pushNow(true); });
-      window.addEventListener("beforeunload", function () { saveState(); pushNow(true); });
+         of a visit. (No prompt is shown — this only writes the data.)
+         This must only write the data locally: it must NOT stamp a new time
+         (saveState does), or a tab that has been in the background a while
+         would re-stamp its stale copy as brand-new and push it over the
+         newer data another device saved — which is what kept resetting
+         locations. pushNow only sends anything if there are genuine
+         unsynced changes (updatedAt > lastPushedAt). */
+      window.addEventListener("pagehide", function () { saveLocal(); pushNow(true); });
+      window.addEventListener("beforeunload", function () { saveLocal(); pushNow(true); });
       document.addEventListener("visibilitychange", function () {
-        if (document.visibilityState === "hidden") { saveState(); pushNow(true); }
+        if (document.visibilityState === "hidden") { saveLocal(); pushNow(true); }
         else pullNow();
       });
       /* If this browser won't keep saved data at all (private tab, or the
@@ -485,13 +492,48 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       function validCloud(d) {
         return d && Array.isArray(d.items) && Array.isArray(d.historyLog) && Array.isArray(d.locations);
       }
+      function normState(s) {
+        // A canonical form of a tracker state, for comparing two copies
+        // regardless of field order, row order, or how the Sheet stored a
+        // value (the Sheet keeps createdAt as text, this device as a number).
+        function normItem(it) {
+          return {
+            id: it.id, name: it.name, category: it.category, location: it.location,
+            sample: it.sample === true || it.sample === "TRUE",
+            createdAt: (typeof it.createdAt === "number") ? it.createdAt : Date.parse(it.createdAt)
+          };
+        }
+        function normHist(h) {
+          return { ts: h.ts, itemId: h.itemId, from: h.from, to: h.to, note: h.note || "" };
+        }
+        var its = s.items.map(normItem).sort(function (a, b) { return String(a.id).localeCompare(String(b.id)); });
+        var locs = s.locations.slice().sort();
+        var hist = s.historyLog.map(normHist).sort(function (a, b) {
+          return (a.ts - b.ts) || String(a.itemId).localeCompare(String(b.itemId)) || String(a.to).localeCompare(String(b.to));
+        });
+        return JSON.stringify({ locations: locs, items: its, historyLog: hist, nextNum: s.nextNum });
+      }
       function mergeCloudLocal(c) {
-        // First contact between two devices that each have their own items: combine them
-        // instead of one side's list wiping out the other's. Items are matched by code +
-        // name; if both devices used the same code for different items, the local one
+        // Combine the Sheet's copy with this device's copy. This runs on every
+        // sync now, not just on first contact, so two devices editing at once
+        // converge instead of one side's whole list wiping out the other's:
+        // - an item's location comes from its latest logged move (every location
+        //   change writes one), so the newest move wins and then stays won;
+        // - removing an item writes a "removed" entry in the log, so a removal
+        //   survives the merge too, and the item's older moves are dropped;
+        // - items only one side has are kept, and locations are combined.
+        // If both devices used the same code for different items, the local one
         // gets a fresh code and its history follows the new code.
+        var cloudAt = (typeof c.updatedAt === "number") ? c.updatedAt : 0;
+        function copyItem(it) {
+          var copy = {};
+          for (var k in it) copy[k] = it[k];
+          return copy;
+        }
         var cloudIds = {};
         c.items.forEach(function (it) { cloudIds[it.id] = it; });
+        var localIds = {};
+        items.forEach(function (it) { localIds[it.id] = it; });
         var used = {};
         c.items.forEach(function (it) { used[it.id] = true; });
         var nextFree = 1;
@@ -501,18 +543,17 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
           used[id] = true;
           return id;
         }
-        var renames = {}, mergedItems = c.items.slice();
+        var renames = {}, mergedItems = c.items.map(copyItem);
         items.forEach(function (it) {
           if (cloudIds[it.id] && cloudIds[it.id].name === it.name) return; // same item already in the Sheet
           if (cloudIds[it.id]) { // same code, different item — give the local one a fresh code
             var nid = freshId();
             renames[it.id] = nid;
-            var copy = {};
-            for (var k in it) copy[k] = it[k];
+            var copy = copyItem(it);
             copy.id = nid;
             mergedItems.push(copy);
           } else {
-            mergedItems.push(it);
+            mergedItems.push(copyItem(it));
           }
         });
         var locs = c.locations.slice();
@@ -520,14 +561,48 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         var seen = {}, mergedHist = [];
         function addHist(h, itemId) {
           var k = h.ts + "|" + itemId + "|" + h.to;
-          if (!seen[k]) { seen[k] = true; mergedHist.push({ ts: h.ts, itemId: itemId, from: h.from, to: h.to, note: h.note }); }
+          if (!seen[k]) { seen[k] = true; mergedHist.push({ ts: h.ts, itemId: itemId, from: h.from, to: h.to, note: h.note || "" }); }
         }
         c.historyLog.forEach(function (h) { addHist(h, h.itemId); });
         historyLog.forEach(function (h) { addHist(h, renames[h.itemId] || h.itemId); });
-        mergedHist.sort(function (a, b) { return a.ts - b.ts; });
+        // A removal hides everything logged for that item up to the removal.
+        // Keep the removal itself (it is the tombstone) and any newer moves,
+        // which mean the code was reused for a new item afterwards.
+        var latestRemoval = {};
+        mergedHist.forEach(function (h) {
+          if (h.note === "removed" && (latestRemoval[h.itemId] == null || h.ts > latestRemoval[h.itemId])) latestRemoval[h.itemId] = h.ts;
+        });
+        var keptHist = mergedHist.filter(function (h) {
+          var r = latestRemoval[h.itemId];
+          if (r == null) return true;
+          return h.ts > r || (h.ts === r && h.note === "removed");
+        });
+        keptHist.sort(function (a, b) { return a.ts - b.ts; });
+        var latestById = {};
+        keptHist.forEach(function (h) {
+          if (!latestById[h.itemId] || h.ts >= latestById[h.itemId].ts) latestById[h.itemId] = h;
+        });
+        var finalItems = mergedItems.filter(function (it) {
+          var latest = latestById[it.id];
+          if (!latest || latest.note !== "removed") return true;
+          // The latest log entry is a removal — but if this item was created
+          // after that removal, the code was reused for a new item: keep it.
+          var created = (typeof it.createdAt === "number") ? it.createdAt : Date.parse(it.createdAt);
+          return !!(created && created > latest.ts);
+        });
+        finalItems.forEach(function (it) {
+          var latest = latestById[it.id];
+          if (latest && latest.note !== "removed") {
+            it.location = latest.to; // newest move decides the location
+          } else if (localIds[it.id] && cloudIds[it.id]) {
+            // No moves at all: the side that saved most recently wins
+            // (e.g. one side renamed the location).
+            it.location = (updatedAt >= cloudAt) ? localIds[it.id].location : cloudIds[it.id].location;
+          }
+        });
         var top = 0;
-        mergedItems.forEach(function (it) { var n = parseInt(String(it.id).replace(/^EQP-/, ""), 10); if (n > top) top = n; });
-        return { locations: locs, items: mergedItems, historyLog: mergedHist, nextNum: Math.max(c.nextNum || 1, nextNum, top + 1) };
+        finalItems.forEach(function (it) { var n = parseInt(String(it.id).replace(/^EQP-/, ""), 10); if (n > top) top = n; });
+        return { locations: locs, items: finalItems, historyLog: keptHist, nextNum: Math.max(c.nextNum || 1, nextNum, top + 1) };
       }
       function applyCloudState(d) {
         locations = d.locations; items = d.items; historyLog = d.historyLog;
@@ -543,7 +618,26 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         if (!SYNC_URL || syncBusy || updatedAt <= lastPushedAt) return;
         syncBusy = true;
         syncStatus("Syncing…");
-        fetch(SYNC_URL, { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(syncState()), keepalive: !!keepalive })
+        // Read the Sheet first and merge, so this push never overwrites a
+        // newer copy another device saved while this one was away. If the
+        // read fails, send the local copy as before rather than losing it.
+        fetch(SYNC_URL)
+          .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
+          .then(function (d) {
+            if (!validCloud(d)) throw new Error("bad cloud state");
+            var m = mergeCloudLocal(d);
+            if (normState(m) !== normState(syncState())) {
+              locations = m.locations; items = m.items; historyLog = m.historyLog; nextNum = m.nextNum;
+              updatedAt = Date.now();
+              editingLoc = null;
+              saveLocal();
+              refreshLocationUI(); renderItems(); renderHistory();
+            }
+          })
+          .catch(function () { /* read failed — fall through and send the local copy */ })
+          .then(function () {
+            return fetch(SYNC_URL, { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(syncState()), keepalive: !!keepalive });
+          })
           .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
           .then(function () { lastPushedAt = updatedAt; markSeeded(); syncStatus(doneMsg || ("Synced with the shared sheet ✓ " + syncTime())); })
           .catch(function () { syncStatus("Offline — saved on this device only, will sync when you're back online."); })
@@ -551,7 +645,10 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       }
       function schedulePush() {
         if (pushTimer) clearTimeout(pushTimer);
-        pushTimer = setTimeout(function () { pushNow(false); }, 800);
+        pushTimer = setTimeout(function () {
+          if (syncBusy) { schedulePush(); return; } // a sync is in flight — try again shortly, don't drop the push
+          pushNow(false);
+        }, 800);
       }
       function pullNow() {
         if (!SYNC_URL || syncBusy) return;
@@ -570,37 +667,46 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
               pushNow(false);
               return;
             }
-            if (cloudAt > updatedAt) {
-              if (d.items.length === 0 && d.locations.length === 0 && !hasLocalState) {
-                // The Sheet is empty and this device has never saved anything — keep the
-                // sample items instead of wiping them for an empty list.
+            if (!hasLocalState) {
+              // This device has never saved anything — take the Sheet wholesale,
+              // unless it is totally empty (then keep the samples instead of
+              // wiping them for an empty list).
+              if (d.items.length === 0 && d.locations.length === 0) {
                 syncStatus("Shared sheet is empty — add an item and it will sync to your other devices.");
-              } else if (!syncSeeded && hasLocalState) {
-                // First contact and this device has its own items the Sheet hasn't
-                // seen — merge them in instead of letting the Sheet's copy wipe them out.
-                var m = mergeCloudLocal(d);
-                locations = m.locations; items = m.items; historyLog = m.historyLog; nextNum = m.nextNum;
-                updatedAt = Date.now();
-                editingLoc = null;
-                saveLocal();
-                refreshLocationUI(); renderItems(); renderHistory();
-                markSeeded();
-                syncBusy = false;
-                pushNow(false, "Merged this device's items into the shared sheet ✓ " + syncTime());
-                return;
               } else {
                 applyCloudState(d);
                 syncStatus("Synced with the shared sheet ✓ " + syncTime());
               }
-            } else if (updatedAt > lastPushedAt && updatedAt > cloudAt) {
-              syncBusy = false; // this device has changes the Sheet hasn't seen — send them up
-              pushNow(false);
               return;
-            } else if (cloudAt === 0 && !hasLocalState) {
-              syncStatus("Shared sheet is empty — add an item and it will sync to your other devices.");
-            } else {
-              syncStatus("Synced with the shared sheet ✓ " + syncTime());
             }
+            // This device has its own data: merge with the Sheet instead of
+            // letting one side's whole list wipe out the other's. (Adopting
+            // wholesale here used to delete changes this device made while
+            // offline whenever the Sheet had moved on.)
+            var localState = syncState();
+            var m = mergeCloudLocal(d);
+            var changedLocal = normState(m) !== normState(localState);
+            var changedCloud = normState(m) !== normState(d);
+            if (changedLocal) {
+              locations = m.locations; items = m.items; historyLog = m.historyLog; nextNum = m.nextNum;
+              updatedAt = Date.now();
+              editingLoc = null;
+              saveLocal();
+              refreshLocationUI(); renderItems(); renderHistory();
+              markSeeded();
+            }
+            if (changedCloud) {
+              syncBusy = false;
+              // Both sides had something the other lacked: the lists were
+              // combined. Say so, so it is visible that the merge happened.
+              var doneMsg = (changedLocal && changedCloud)
+                ? ("Merged this device's items into the shared sheet ✓ " + syncTime())
+                : ("Synced with the shared sheet ✓ " + syncTime());
+              pushNow(false, doneMsg);
+              return;
+            }
+            if (changedLocal) lastPushedAt = updatedAt; // adopted the Sheet — nothing new to send
+            syncStatus("Synced with the shared sheet ✓ " + syncTime());
           })
           .catch(function () { syncStatus("Offline — saved on this device only, will sync when you're back online."); })
           .finally(function () { syncBusy = false; });
@@ -828,9 +934,13 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         labelsRendered = false;
       }
       function removeItem(id) {
-        items = items.filter(function (it) { return it.id !== id; });
+        var it = findItem(id);
+        // Log the removal: the merge reads it as a tombstone, so the item
+        // stays removed instead of coming back from the other device's copy.
+        if (it) historyLog.push({ ts: Date.now(), itemId: it.id, from: it.location, to: "", note: "removed" });
+        items = items.filter(function (x) { return x.id !== id; });
         saveState();
-        renderItems();
+        renderItems(); renderHistory();
       }
       function changeItemLocation(id, to) {
         var it = findItem(id);
@@ -843,9 +953,11 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
       }
       function clearSamples() {
         var sampleIds = {};
-        items.forEach(function (it) { if (it.sample) sampleIds[it.id] = true; });
+        var removed = [];
+        items.forEach(function (it) { if (it.sample) { sampleIds[it.id] = true; removed.push(it); } });
         items = items.filter(function (it) { return !it.sample; });
         historyLog = historyLog.filter(function (h) { return !sampleIds[h.itemId]; });
+        removed.forEach(function (it) { historyLog.push({ ts: Date.now(), itemId: it.id, from: it.location, to: "", note: "removed" }); });
         saveState();
         renderItems(); renderHistory();
       }
@@ -896,10 +1008,11 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         var sorted = historyLog.slice().sort(function (a, b) { return b.ts - a.ts; });
         $("historyList").innerHTML = sorted.map(function (h) {
           var it = findItem(h.itemId);
+          var removed = h.note === "removed";
           return '<div class="hist-entry"><div class="when">' + esc(fmtTime(h.ts)) + "</div>" +
             '<div class="what">' + esc(h.itemId) + (it ? " — " + esc(it.name) : "") + "</div>" +
-            "<div>" + esc(h.from) + " &rarr; <strong>" + esc(h.to) + "</strong></div>" +
-            (h.note ? '<div class="small">' + esc(h.note) + "</div>" : "") + "</div>";
+            "<div>" + (removed ? "Removed from <strong>" + esc(h.from) + "</strong>" : esc(h.from) + " &rarr; <strong>" + esc(h.to) + "</strong>") + "</div>" +
+            (!removed && h.note ? '<div class="small">' + esc(h.note) + "</div>" : "") + "</div>";
         }).join("");
       }
       $("btnCsv").addEventListener("click", function () {
@@ -929,13 +1042,13 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
           $("whereResult").innerHTML = '<div class="alert warn"><p style="margin:0"><strong>' + esc(it.id) + "</strong> was not registered yet at " + esc(fmtTime(t)) + " — it was added on " + esc(fmtTime(it.createdAt)) + ".</p></div>";
           return;
         }
-        var moves = historyLog.filter(function (h) { return h.itemId === it.id && h.ts <= t; }).sort(function (a, b) { return b.ts - a.ts; });
+        var moves = historyLog.filter(function (h) { return h.itemId === it.id && h.ts <= t && h.note !== "removed"; }).sort(function (a, b) { return b.ts - a.ts; });
         var loc, detail;
         if (moves.length) {
           loc = moves[0].to;
           detail = "Last move before then: " + esc(moves[0].from) + " &rarr; " + esc(moves[0].to) + " on " + esc(fmtTime(moves[0].ts)) + ".";
         } else {
-          var first = historyLog.filter(function (h) { return h.itemId === it.id; }).sort(function (a, b) { return a.ts - b.ts; })[0];
+          var first = historyLog.filter(function (h) { return h.itemId === it.id && h.note !== "removed"; }).sort(function (a, b) { return a.ts - b.ts; })[0];
           loc = first ? first.from : it.location;
           detail = "No moves recorded before that time — it was still at its starting location.";
         }
