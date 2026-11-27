@@ -566,13 +566,21 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
           .then(function (d) {
             if (!validCloud(d)) throw new Error("bad cloud state");
             var cloudAt = (typeof d.updatedAt === "number") ? d.updatedAt : 0;
-            if (cloudAt === 0 && hasLocalState && updatedAt > 0) {
-              syncBusy = false; // Sheet is empty but this device has real data — seed it
+            if (cloudAt === 0 && hasLocalState) {
+              // Sheet is empty but this device has saved data — seed it. Data saved
+              // before sync existed has no timestamp, so stamp it now before sending.
+              updatedAt = Date.now();
+              saveLocal();
+              syncBusy = false;
               pushNow(false);
               return;
             }
             if (cloudAt > updatedAt) {
-              if (!syncSeeded && hasLocalState && updatedAt > 0) {
+              if (d.items.length === 0 && d.locations.length === 0 && !hasLocalState) {
+                // The Sheet is empty and this device has never saved anything — keep the
+                // sample items instead of wiping them for an empty list.
+                syncStatus("Shared sheet is empty — add an item and it will sync to your other devices.");
+              } else if (!syncSeeded && hasLocalState) {
                 // First contact and this device has its own items the Sheet hasn't
                 // seen — merge them in instead of letting the Sheet's copy wipe them out.
                 var m = mergeCloudLocal(d);
@@ -585,9 +593,10 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
                 syncBusy = false;
                 pushNow(false, "Merged this device's items into the shared sheet ✓ " + syncTime());
                 return;
+              } else {
+                applyCloudState(d);
+                syncStatus("Synced with the shared sheet ✓ " + syncTime());
               }
-              applyCloudState(d);
-              syncStatus("Synced with the shared sheet ✓ " + syncTime());
             } else if (updatedAt > lastPushedAt && updatedAt > cloudAt) {
               syncBusy = false; // this device has changes the Sheet hasn't seen — send them up
               pushNow(false);
