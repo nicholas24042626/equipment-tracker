@@ -235,6 +235,7 @@
       </nav>
 
       <div id="saveWarn" class="alert warn noprint" style="display:none; margin:12px 0">Saving is blocked in this browser — for example a private tab, or opening this link inside another app. Your items and moves will be lost when this page closes. Open the link in Safari or Chrome instead, and your data will be kept.</div>
+      <div id="syncStatus" class="small noprint" style="margin:8px 0 0; color:#666">Connecting to the shared sheet…</div>
 
       <!-- ================= SCAN ================= -->
       <section class="panel active" id="panel-scan">
@@ -398,6 +399,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         { ts: now - 1 * 864e5 - 5 * 36e5, itemId: "EQP-004", from: "Office", to: "Store Room", note: "Sample move" }
       ];
       var nextNum = 6;
+      var updatedAt = 0; // ms timestamp of the last change on this device (drives sync)
       var pendingLocation = null;   // set by scanning a location label
       var labelsRendered = false;
 
@@ -407,10 +409,15 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
          If storage is blocked (e.g. private browsing), the tracker
          still works for the session — it just can't keep the data. */
       var STORE_KEY = "equipment-tracker-v1";
-      function saveState() {
+      function saveLocal() {
         try {
-          localStorage.setItem(STORE_KEY, JSON.stringify({ v: 1, locations: locations, items: items, historyLog: historyLog, nextNum: nextNum }));
+          localStorage.setItem(STORE_KEY, JSON.stringify({ v: 1, locations: locations, items: items, historyLog: historyLog, nextNum: nextNum, updatedAt: updatedAt }));
         } catch (e) { /* storage unavailable — session-only, as before */ }
+      }
+      function saveState() {
+        updatedAt = Date.now();
+        saveLocal();
+        schedulePush();
       }
       function loadState() {
         try {
@@ -420,19 +427,21 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
           if (!d || !Array.isArray(d.items) || !Array.isArray(d.historyLog) || !Array.isArray(d.locations)) return false;
           locations = d.locations; items = d.items; historyLog = d.historyLog;
           if (typeof d.nextNum === "number" && d.nextNum > 0) nextNum = d.nextNum;
+          if (typeof d.updatedAt === "number") updatedAt = d.updatedAt;
           return true;
         } catch (e) { return false; }
       }
-      loadState();
+      var hasLocalState = loadState(); // true once this device has saved real data (not just samples)
 
       /* ==================== Saving when the page closes ====================
          The tracker already saves on every change, but save again whenever
          the page is hidden or closed, so nothing is ever lost at the end
          of a visit. (No prompt is shown — this only writes the data.) */
-      window.addEventListener("pagehide", saveState);
-      window.addEventListener("beforeunload", saveState);
+      window.addEventListener("pagehide", function () { saveState(); pushNow(true); });
+      window.addEventListener("beforeunload", function () { saveState(); pushNow(true); });
       document.addEventListener("visibilitychange", function () {
-        if (document.visibilityState === "hidden") saveState();
+        if (document.visibilityState === "hidden") { saveState(); pushNow(true); }
+        else pullNow();
       });
       /* If this browser won't keep saved data at all (private tab, or the
          link opened inside another app), say so plainly instead of
@@ -449,6 +458,152 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
           if (w) w.style.display = "block";
         }
       })();
+
+      /* ==================== Google Sheets sync (phone + laptop, same data) ====================
+         The data also lives in a shared Google Sheet ("Equipment Tracker Sync") through a
+         small Apps Script web app. Each device keeps its own on-device copy (as before) and
+         syncs it with the Sheet: every change pushes up, and every 30 seconds (plus when
+         the tab is opened again) the device checks the Sheet for a newer copy and takes it.
+         If two devices change things at the same moment while offline, the last save wins.
+         The first time a device meets a Sheet that already holds another device's data,
+         the two lists are merged instead, so nothing is lost.
+         The Sheet's web address is the key — anyone who finds it in the page could read or
+         change the equipment list, so treat the list as non-sensitive. */
+      var SYNC_URL = "https://script.google.com/macros/s/AKfycbzufUD1J1A6SaG1ximqW-tayFPpg9BeZULrbSWPVx1H9lHvz9sErspsIDW6r8c5BwM/exec";
+      var syncBusy = false, pushTimer = null, lastPushedAt = 0;
+      var syncSeeded = false; // true once this device has shared data with the Sheet at least once
+      try { syncSeeded = localStorage.getItem(STORE_KEY + "-seeded") === "1"; } catch (e) {}
+      function markSeeded() {
+        syncSeeded = true;
+        try { localStorage.setItem(STORE_KEY + "-seeded", "1"); } catch (e) {}
+      }
+      function syncState() {
+        return { v: 1, locations: locations, items: items, historyLog: historyLog, nextNum: nextNum, updatedAt: updatedAt };
+      }
+      function syncStatus(msg) {
+        var el = $("syncStatus");
+        if (el) el.textContent = msg;
+      }
+      function syncTime() {
+        return new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      }
+      function validCloud(d) {
+        return d && Array.isArray(d.items) && Array.isArray(d.historyLog) && Array.isArray(d.locations);
+      }
+      function mergeCloudLocal(c) {
+        // First contact between two devices that each have their own items: combine them
+        // instead of one side's list wiping out the other's. Items are matched by code +
+        // name; if both devices used the same code for different items, the local one
+        // gets a fresh code and its history follows the new code.
+        var cloudIds = {};
+        c.items.forEach(function (it) { cloudIds[it.id] = it; });
+        var used = {};
+        c.items.forEach(function (it) { used[it.id] = true; });
+        var nextFree = 1;
+        function freshId() {
+          var id;
+          do { id = "EQP-" + String(nextFree).padStart(3, "0"); nextFree++; } while (used[id]);
+          used[id] = true;
+          return id;
+        }
+        var renames = {}, mergedItems = c.items.slice();
+        items.forEach(function (it) {
+          if (cloudIds[it.id] && cloudIds[it.id].name === it.name) return; // same item already in the Sheet
+          if (cloudIds[it.id]) { // same code, different item — give the local one a fresh code
+            var nid = freshId();
+            renames[it.id] = nid;
+            var copy = {};
+            for (var k in it) copy[k] = it[k];
+            copy.id = nid;
+            mergedItems.push(copy);
+          } else {
+            mergedItems.push(it);
+          }
+        });
+        var locs = c.locations.slice();
+        locations.forEach(function (l) { if (locs.indexOf(l) === -1) locs.push(l); });
+        var seen = {}, mergedHist = [];
+        function addHist(h, itemId) {
+          var k = h.ts + "|" + itemId + "|" + h.to;
+          if (!seen[k]) { seen[k] = true; mergedHist.push({ ts: h.ts, itemId: itemId, from: h.from, to: h.to, note: h.note }); }
+        }
+        c.historyLog.forEach(function (h) { addHist(h, h.itemId); });
+        historyLog.forEach(function (h) { addHist(h, renames[h.itemId] || h.itemId); });
+        mergedHist.sort(function (a, b) { return a.ts - b.ts; });
+        var top = 0;
+        mergedItems.forEach(function (it) { var n = parseInt(String(it.id).replace(/^EQP-/, ""), 10); if (n > top) top = n; });
+        return { locations: locs, items: mergedItems, historyLog: mergedHist, nextNum: Math.max(c.nextNum || 1, nextNum, top + 1) };
+      }
+      function applyCloudState(d) {
+        locations = d.locations; items = d.items; historyLog = d.historyLog;
+        if (typeof d.nextNum === "number" && d.nextNum > 0) nextNum = d.nextNum;
+        if (typeof d.updatedAt === "number") updatedAt = d.updatedAt;
+        lastPushedAt = updatedAt;
+        editingLoc = null;
+        markSeeded();
+        saveLocal();
+        refreshLocationUI(); renderItems(); renderHistory();
+      }
+      function pushNow(keepalive, doneMsg) {
+        if (!SYNC_URL || syncBusy || updatedAt <= lastPushedAt) return;
+        syncBusy = true;
+        syncStatus("Syncing…");
+        fetch(SYNC_URL, { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(syncState()), keepalive: !!keepalive })
+          .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
+          .then(function () { lastPushedAt = updatedAt; markSeeded(); syncStatus(doneMsg || ("Synced with the shared sheet ✓ " + syncTime())); })
+          .catch(function () { syncStatus("Offline — saved on this device only, will sync when you're back online."); })
+          .finally(function () { syncBusy = false; });
+      }
+      function schedulePush() {
+        if (pushTimer) clearTimeout(pushTimer);
+        pushTimer = setTimeout(function () { pushNow(false); }, 800);
+      }
+      function pullNow() {
+        if (!SYNC_URL || syncBusy) return;
+        syncBusy = true;
+        fetch(SYNC_URL)
+          .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
+          .then(function (d) {
+            if (!validCloud(d)) throw new Error("bad cloud state");
+            var cloudAt = (typeof d.updatedAt === "number") ? d.updatedAt : 0;
+            if (cloudAt === 0 && hasLocalState && updatedAt > 0) {
+              syncBusy = false; // Sheet is empty but this device has real data — seed it
+              pushNow(false);
+              return;
+            }
+            if (cloudAt > updatedAt) {
+              if (!syncSeeded && hasLocalState && updatedAt > 0) {
+                // First contact and this device has its own items the Sheet hasn't
+                // seen — merge them in instead of letting the Sheet's copy wipe them out.
+                var m = mergeCloudLocal(d);
+                locations = m.locations; items = m.items; historyLog = m.historyLog; nextNum = m.nextNum;
+                updatedAt = Date.now();
+                editingLoc = null;
+                saveLocal();
+                refreshLocationUI(); renderItems(); renderHistory();
+                markSeeded();
+                syncBusy = false;
+                pushNow(false, "Merged this device's items into the shared sheet ✓ " + syncTime());
+                return;
+              }
+              applyCloudState(d);
+              syncStatus("Synced with the shared sheet ✓ " + syncTime());
+            } else if (updatedAt > lastPushedAt && updatedAt > cloudAt) {
+              syncBusy = false; // this device has changes the Sheet hasn't seen — send them up
+              pushNow(false);
+              return;
+            } else if (cloudAt === 0 && !hasLocalState) {
+              syncStatus("Shared sheet is empty — add an item and it will sync to your other devices.");
+            } else {
+              syncStatus("Synced with the shared sheet ✓ " + syncTime());
+            }
+          })
+          .catch(function () { syncStatus("Offline — saved on this device only, will sync when you're back online."); })
+          .finally(function () { syncBusy = false; });
+      }
+      pullNow();
+      setInterval(pullNow, 30000);
+      window.addEventListener("focus", pullNow);
 
       function $(id) { return document.getElementById(id); }
       function esc(s) {
@@ -718,7 +873,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         document.body.appendChild(a);
         a.click();
         setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-        $("backupMsg").textContent = "Backup downloaded — send this file to your other device and import it there.";
+        $("backupMsg").textContent = "Backup downloaded — kept as a spare copy. Your devices now stay in sync through the shared sheet.";
       });
       $("btnImportData").addEventListener("click", function () { $("importFile").click(); });
       $("importFile").addEventListener("change", function () {
