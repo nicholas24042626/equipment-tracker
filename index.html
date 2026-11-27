@@ -290,6 +290,11 @@
         <div id="sampleBar"></div>
         <div id="itemList"></div>
 
+        <div class="row noprint" style="margin:4px 0 12px">
+          <button class="btn" id="btnRenumber">Reset serial numbers</button>
+          <span class="small" id="renumberMsg" style="align-self:center"></span>
+        </div>
+
         <h3>Add an item</h3>
         <div class="card">
           <div class="field">
@@ -668,6 +673,21 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         $("newName").value = ""; $("newCategory").value = "";
         $("addMsg").innerHTML = 'Added as <strong>' + esc(id) + "</strong>. Print its label from the Labels tab.";
         renderItems();
+      });
+      $("btnRenumber").addEventListener("click", function () {
+        if (!items.length) { $("renumberMsg").textContent = "No items to renumber."; return; }
+        if (!confirm("Renumber all " + items.length + " items from EQP-001? Items keep their order, and the history follows the new codes. Labels already printed will show the old codes — reprint them from the Labels tab.")) return;
+        var map = {};
+        items.forEach(function (it, i) {
+          var nid = "EQP-" + String(i + 1).padStart(3, "0");
+          map[it.id] = nid;
+          it.id = nid;
+        });
+        historyLog.forEach(function (h) { if (map[h.itemId]) h.itemId = map[h.itemId]; });
+        nextNum = items.length + 1;
+        saveState();
+        renderItems(); renderHistory();
+        $("renumberMsg").textContent = "Renumbered " + items.length + " items from EQP-001. Reprint labels from the Labels tab.";
       });
 
       /* ==================== History ==================== */
