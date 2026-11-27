@@ -663,12 +663,23 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         renderItems(); renderHistory();
       }
       $("itemSearch").addEventListener("input", renderItems);
+      function nextFreeNum() {
+        var used = {};
+        items.forEach(function (it) {
+          var m = /^EQP-(\d+)$/.exec(it.id || "");
+          if (m) used[parseInt(m[1], 10)] = true;
+        });
+        var n = 1;
+        while (used[n]) n++;
+        return n;
+      }
       $("btnAddItem").addEventListener("click", function () {
         var name = $("newName").value.trim();
         var cat = $("newCategory").value.trim() || "General";
         if (!name) { $("addMsg").innerHTML = '<span style="color:var(--danger)">Give the item a name first.</span>'; return; }
-        var id = "EQP-" + String(nextNum++).padStart(3, "0");
+        var id = "EQP-" + String(nextFreeNum()).padStart(3, "0");
         items.push({ id: id, name: name, category: cat, location: $("newLocation").value, sample: false, createdAt: Date.now() });
+        nextNum = nextFreeNum();
         saveState();
         $("newName").value = ""; $("newCategory").value = "";
         $("addMsg").innerHTML = 'Added as <strong>' + esc(id) + "</strong>. Print its label from the Labels tab.";
