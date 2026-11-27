@@ -181,6 +181,9 @@
         background: var(--surface-2); border: 1px solid var(--line);
         border-radius: 6px; padding: 2px 8px; font-size: 0.88rem; font-weight: 700;
       }
+      .loc-chip { cursor: grab; touch-action: none; }
+      .loc-chip.dragging { opacity: .35; }
+      .loc-grip { opacity: .55; padding-right: 2px; }
       .meta { color: var(--muted); font-size: 0.92rem; margin-top: 2px; }
       .meta strong { color: var(--ink); }
 
@@ -308,6 +311,7 @@
         <h3>Locations</h3>
         <div class="card">
           <div id="locList" style="margin-bottom:10px"></div>
+          <div class="small" style="margin:0 0 10px">Drag a location to change its order.</div>
           <div class="row">
             <div class="field" style="flex:1 1 55%; margin-bottom:0">
               <input id="newLocName" type="text" placeholder="New location name" aria-label="New location name" />
@@ -480,7 +484,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
               + '<button class="btn small-btn" id="btnSaveLoc">Save</button> '
               + '<button class="btn small-btn" id="btnCancelLoc">Cancel</button></span>';
           }
-          return '<span class="idchip" style="margin:0 6px 6px 0; display:inline-block">' + esc(l)
+          return '<span class="idchip loc-chip" data-loc="' + esc(l) + '" style="margin:0 6px 6px 0; display:inline-block"><span class="loc-grip" aria-hidden="true">⋮⋮</span> ' + esc(l)
             + ' <button class="btn small-btn" data-edit-loc="' + esc(l) + '">Edit</button></span>';
         }).join("");
         labelsRendered = false;
@@ -492,6 +496,10 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
             var inp = $("editLocInput");
             if (inp) { inp.focus(); inp.select(); }
           });
+        }
+        var chips = document.querySelectorAll("#locList [data-loc]");
+        for (var i = 0; i < chips.length; i++) {
+          chips[i].addEventListener("pointerdown", function (e) { locDragStart(e, this.getAttribute("data-loc")); });
         }
         var saveBtn = $("btnSaveLoc");
         if (saveBtn) {
@@ -514,6 +522,75 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         refreshLocationUI();
         renderItems();
       }
+      /* ==================== Dragging locations to reorder ====================
+         Pointer events, so the same drag works with a mouse and with a
+         finger on a phone. A drag only starts after the pointer moves a
+         few pixels, so tapping Edit still works, and buttons/inputs never
+         start a drag. The new order is saved when the drag ends. */
+      var locDrag = null; // { name, chip, ghost, dx, dy, sx, sy, started }
+      function locChips() {
+        return Array.prototype.slice.call(document.querySelectorAll('#locList [data-loc]'));
+      }
+      function locDragStart(e, name) {
+        if (editingLoc) return;
+        if (e.target.closest('button, input')) return;
+        if (e.button != null && e.button !== 0) return; // left button / touch only
+        e.preventDefault();
+        var chip = null;
+        locChips().forEach(function (c) { if (c.getAttribute('data-loc') === name) chip = c; });
+        if (!chip) return;
+        var r = chip.getBoundingClientRect();
+        locDrag = { name: name, chip: chip, ghost: null, dx: e.clientX - r.left, dy: e.clientY - r.top, sx: e.clientX, sy: e.clientY, started: false };
+        try { chip.setPointerCapture(e.pointerId); } catch (err) { /* older browser — window listeners still get the events */ }
+        window.addEventListener('pointermove', locDragMove);
+        window.addEventListener('pointerup', locDragEnd);
+        window.addEventListener('pointercancel', locDragCancel);
+      }
+      function locDragMove(e) {
+        if (!locDrag) return;
+        e.preventDefault();
+        if (!locDrag.started) {
+          if (Math.abs(e.clientX - locDrag.sx) < 6 && Math.abs(e.clientY - locDrag.sy) < 6) return;
+          locDrag.started = true;
+          var g = locDrag.chip.cloneNode(true);
+          var r = locDrag.chip.getBoundingClientRect();
+          g.style.cssText = 'position:fixed; left:' + r.left + 'px; top:' + r.top + 'px; width:' + r.width + 'px; margin:0; z-index:9999; pointer-events:none; opacity:.95; box-shadow:0 6px 18px rgba(0,0,0,.35);';
+          document.body.appendChild(g);
+          locDrag.ghost = g;
+          locDrag.chip.classList.add('dragging');
+        }
+        locDrag.ghost.style.left = (e.clientX - locDrag.dx) + 'px';
+        locDrag.ghost.style.top = (e.clientY - locDrag.dy) + 'px';
+        // Move the chip in the list to where the pointer is (row-major order).
+        var pv = e.clientY * 100000 + e.clientX;
+        var before = null;
+        locChips().forEach(function (c) {
+          if (c === locDrag.chip || before) return;
+          var cr = c.getBoundingClientRect();
+          var cv = (cr.top + cr.height / 2) * 100000 + (cr.left + cr.width / 2);
+          if (pv < cv) before = c;
+        });
+        var list = $('locList');
+        if (before) list.insertBefore(locDrag.chip, before);
+        else list.appendChild(locDrag.chip);
+      }
+      function locDragFinish(save) {
+        if (!locDrag) return;
+        window.removeEventListener('pointermove', locDragMove);
+        window.removeEventListener('pointerup', locDragEnd);
+        window.removeEventListener('pointercancel', locDragCancel);
+        if (locDrag.ghost) locDrag.ghost.remove();
+        var started = locDrag.started;
+        locDrag = null;
+        if (!started) return; // it was just a tap
+        if (save) {
+          locations = locChips().map(function (c) { return c.getAttribute('data-loc'); });
+          saveState();
+        }
+        refreshLocationUI();
+      }
+      function locDragEnd(e) { locDragFinish(true); }
+      function locDragCancel(e) { locDragFinish(false); }
       $("btnAddLoc").addEventListener("click", function () {
         var v = $("newLocName").value.trim();
         if (!v) return;
